@@ -43,7 +43,6 @@ def send_frame(conn: socket.socket, payload: bytes) -> None:
 
 # Rule application
 def get_time_window(hour: int) -> Tuple[str, dict]:
-    """Return rule key and rule dict for given hour (0-23)."""
     # morning: 04..11
     if 4 <= hour <= 11:
         return "morning", TIMESTAMP_RULES["morning"]
