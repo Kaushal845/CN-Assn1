@@ -1,16 +1,3 @@
-#!/usr/bin/env python3
-"""
-dns_server.py
-
-Listens for framed messages:
-  [2B length][8B ASCII header HHMMSSID][raw DNS message bytes]
-
-Parses the 8B header and DNS qname, applies routing rules to pick an IP
-from the 15-IP pool, and replies with:
-  [2B length][8B header][JSON payload bytes]
-
-JSON payload: {"id": "<HHMMSSID>", "qname": "<qname>", "resolved": "<ip>"}
-"""
 import socket
 import struct
 import threading
@@ -26,14 +13,14 @@ IP_POOL = [
  "192.168.1.11","192.168.1.12","192.168.1.13","192.168.1.14","192.168.1.15"
 ]
 
-# Predefined rules (as described). Each window has time_range, hash_mod and ip_pool_start
+# Each window has time_range, hash_mod and ip_pool_start
 TIMESTAMP_RULES = {
     "morning":   {"time_range": "04:00-11:59", "hash_mod": 5, "ip_pool_start": 0,  "description": "Morning traffic routed to first 5 IPs"},
     "afternoon": {"time_range": "12:00-19:59", "hash_mod": 5, "ip_pool_start": 5,  "description": "Afternoon traffic routed to middle 5 IPs"},
     "night":     {"time_range": "20:00-03:59", "hash_mod": 5, "ip_pool_start": 10, "description": "Night traffic routed to last 5 IPs"}
 }
 
-# ---- framing helpers ----
+# Framing helpers
 def recv_exact(conn: socket.socket, n: int) -> bytes:
     buf = bytearray()
     while len(buf) < n:
@@ -54,7 +41,7 @@ def send_frame(conn: socket.socket, payload: bytes) -> None:
         raise ValueError("frame too large")
     conn.sendall(struct.pack("!H", len(payload)) + payload)
 
-# ---- rule application ----
+# Rule application
 def get_time_window(hour: int) -> Tuple[str, dict]:
     """Return rule key and rule dict for given hour (0-23)."""
     # morning: 04..11
@@ -67,11 +54,6 @@ def get_time_window(hour: int) -> Tuple[str, dict]:
     return "night", TIMESTAMP_RULES["night"]
 
 def pick_ip_from_header(header: str) -> str:
-    """
-    header: 'HHMMSSID' string length 8
-    parse HH and ID (last two chars) and compute index:
-      idx = ip_pool_start + (ID % hash_mod)
-    """
     try:
         hh = int(header[0:2])
     except Exception:
@@ -88,7 +70,7 @@ def pick_ip_from_header(header: str) -> str:
     idx = idx % len(IP_POOL)
     return IP_POOL[idx]
 
-# ---- client handler ----
+# Client handler
 def handle_client(conn: socket.socket, addr) -> None:
     print(f"[{datetime.now()}] Connection from {addr}")
     try:
@@ -98,7 +80,8 @@ def handle_client(conn: socket.socket, addr) -> None:
             except ConnectionError:
                 break
             if len(frame) < 8:
-                print("Frame too small; closing")
+                print("Frame too small")
+                print("Connection closed")
                 break
             header = frame[:8].decode("ascii", errors="ignore")
             dns_bytes = frame[8:]
@@ -106,7 +89,7 @@ def handle_client(conn: socket.socket, addr) -> None:
             try:
                 dns = DNS(dns_bytes)
                 if dns.qdcount > 0 and dns.qd is not None:
-                    # extract qname; scapy may give bytes or str
+                    # extract qname
                     q = dns.qd
                     if hasattr(q, "qname"):
                         if isinstance(q.qname, bytes):
@@ -114,7 +97,7 @@ def handle_client(conn: socket.socket, addr) -> None:
                         else:
                             qname = str(q.qname)
             except Exception as e:
-                # unable to parse DNS; still proceed with IP selection based on header
+                # proceed with IP selection based on header
                 qname = None
 
             resolved_ip = pick_ip_from_header(header)
@@ -128,7 +111,7 @@ def handle_client(conn: socket.socket, addr) -> None:
         conn.close()
         print(f"[{datetime.now()}] Disconnected {addr}")
 
-# ---- server runner ----
+# Server runner
 def run_server(bind_host: str = "0.0.0.0", bind_port: int = 53530):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
