@@ -1,21 +1,12 @@
-#!/usr/bin/env python3
-"""
-dns_client.py
-
-Streams a large PCAP using scapy.PcapReader (memory efficient), filters DNS queries,
-prepends an 8-byte header HHMMSSID (ID is two-digit sequence starting 00),
-sends to server framed by 2-byte length prefix, receives server JSON reply,
-and writes a CSV report with columns: header, domain, resolved_ip
-"""
 import sys
 import socket
 import struct
 import datetime
 import csv
-from scapy.all import PcapReader, DNS
+from scapy.all import PcapReader, DNS  # Using PCAPreader instead og rdpcap as pcap file is large.
 import json
 
-# ---- framing helpers ----
+# Framing helpers
 def send_frame(sock: socket.socket, payload: bytes) -> None:
     sock.sendall(struct.pack("!H", len(payload)) + payload)
 
@@ -34,16 +25,16 @@ def recv_frame(sock: socket.socket) -> bytes:
     data = recv_exact(sock, length)
     return data
 
-# ---- header builder ----
+# Header builder
 def make_header(seq_id: int, when: datetime.datetime = None) -> str:
     when = when or datetime.datetime.now()
     hh = f"{when:%H}"
     mm = f"{when:%M}"
     ss = f"{when:%S}"
-    id_ = f"{seq_id % 100:02d}"   # two-digit session id (wrap at 100)
+    id_ = f"{seq_id % 100:02d}"   # two-digit session id
     return f"{hh}{mm}{ss}{id_}"
 
-# ---- run client ----
+# Run client
 def run_client(pcap_path: str, server_host: str = "127.0.0.1", server_port: int = 53530,
                report_csv: str = "report.csv", skip_local: bool = False):
     print(f"[*] Streaming PCAP: {pcap_path}")
@@ -62,7 +53,7 @@ def run_client(pcap_path: str, server_host: str = "127.0.0.1", server_port: int 
                 if packet_count % 100000 == 0:
                     print(f"[*] processed {packet_count} packets, sent {seq_id} queries so far...")
 
-                # filter DNS queries only (qr==0)
+                # filter DNS queries only i.e. qr == 0
                 try:
                     if not pkt.haslayer(DNS):
                         continue
@@ -81,31 +72,29 @@ def run_client(pcap_path: str, server_host: str = "127.0.0.1", server_port: int 
                 except Exception:
                     qname = ""
 
-                # optional: skip .local queries which are mDNS and not resolvable by rules if desired
+                # skip .local queries which are mDNS and not resolvable by rules if desired
                 if skip_local and qname.endswith(".local."):
-                    # still increment the seq_id? For consistent IDs as per "sequence of DNS query starting from 00",
-                    # we will increment only for forwarded queries so the ID reflects forwarded queries count.
                     continue
 
                 header = make_header(seq_id)
                 dns_bytes = bytes(dns_layer)   # raw DNS bytes
                 payload = header.encode("ascii") + dns_bytes
 
-                # send and wait for response
+                # send and wait
                 try:
                     send_frame(s, payload)
                 except Exception as e:
                     print(f"[!] send_frame error: {e}")
                     break
 
-                # receive response
+                # receive
                 try:
                     resp = recv_frame(s)
                 except Exception as e:
                     print(f"[!] recv_frame error: {e}")
                     break
 
-                # parse response: header + JSON
+                # parsing response - header + JSON
                 if len(resp) < 8:
                     print("[!] malformed response (too short)")
                     continue
@@ -118,7 +107,6 @@ def run_client(pcap_path: str, server_host: str = "127.0.0.1", server_port: int 
                 resolved_ip = resp_json.get("resolved", "")
                 print(f"[{seq_id:02d}] {resp_header} {qname} -> {resolved_ip}")
 
-                # log for report
                 rows.append((resp_header, qname, resolved_ip))
 
                 seq_id += 1
@@ -131,7 +119,7 @@ def run_client(pcap_path: str, server_host: str = "127.0.0.1", server_port: int 
             writer.writerow(r)
     print(f"[*] Done. wrote {len(rows)} rows to {report_csv}")
 
-# ---- CLI ----
+
 if __name__ == "__main__":
     if len(sys.argv) < 3:
         print("Usage: python dns_client.py <pcap_path> <server_ip> [server_port] [report.csv] [skip_local(0|1)]")
