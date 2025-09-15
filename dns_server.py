@@ -8,19 +8,18 @@ from scapy.all import DNS
 from typing import Tuple
 
 IP_POOL = [
- "192.168.1.1","192.168.1.2","192.168.1.3","192.168.1.4","192.168.1.5",
- "192.168.1.6","192.168.1.7","192.168.1.8","192.168.1.9","192.168.1.10",
- "192.168.1.11","192.168.1.12","192.168.1.13","192.168.1.14","192.168.1.15"
+    "192.168.1.1","192.168.1.2","192.168.1.3","192.168.1.4","192.168.1.5",
+    "192.168.1.6","192.168.1.7","192.168.1.8","192.168.1.9","192.168.1.10",
+    "192.168.1.11","192.168.1.12","192.168.1.13","192.168.1.14","192.168.1.15"
 ]
 
-# Each window has time_range, hash_mod and ip_pool_start
 TIMESTAMP_RULES = {
     "morning":   {"time_range": "04:00-11:59", "hash_mod": 5, "ip_pool_start": 0,  "description": "Morning traffic routed to first 5 IPs"},
     "afternoon": {"time_range": "12:00-19:59", "hash_mod": 5, "ip_pool_start": 5,  "description": "Afternoon traffic routed to middle 5 IPs"},
     "night":     {"time_range": "20:00-03:59", "hash_mod": 5, "ip_pool_start": 10, "description": "Night traffic routed to last 5 IPs"}
 }
 
-# Framing helpers
+# Framing
 def recv_exact(conn: socket.socket, n: int) -> bytes:
     buf = bytearray()
     while len(buf) < n:
@@ -41,33 +40,36 @@ def send_frame(conn: socket.socket, payload: bytes) -> None:
         raise ValueError("frame too large")
     conn.sendall(struct.pack("!H", len(payload)) + payload)
 
-# Rule application
+# Rule logic
 def get_time_window(hour: int) -> Tuple[str, dict]:
-    # morning: 04..11
     if 4 <= hour <= 11:
         return "morning", TIMESTAMP_RULES["morning"]
-    # afternoon: 12..19
     if 12 <= hour <= 19:
         return "afternoon", TIMESTAMP_RULES["afternoon"]
-    # night: 20..23 or 0..3
     return "night", TIMESTAMP_RULES["night"]
 
 def pick_ip_from_header(header: str) -> str:
     try:
         hh = int(header[0:2])
-    except Exception:
-        hh = 0
-    try:
+        mm = int(header[2:4])
+        ss = int(header[4:6])
         id_val = int(header[6:8])
     except Exception:
-        id_val = 0
-    _, rule = get_time_window(hh)
+        hh, mm, ss, id_val = 0, 0, 0, 0
+
+    period, rule = get_time_window(hh)
     mod = rule.get("hash_mod", 5)
     start = rule.get("ip_pool_start", 0)
     idx = start + (id_val % mod)
-    # clamp
     idx = idx % len(IP_POOL)
-    return IP_POOL[idx]
+    chosen_ip = IP_POOL[idx]
+
+    # Debug print showing how decision was made
+    print(f"    Header {header}: HH={hh} MM={mm} SS={ss} ID={id_val}")
+    print(f"    → Time window: {period.upper()} ({rule['time_range']}) using pool[{start}:{start+5}]")
+    print(f"    → ID%{mod} = {id_val % mod}, chosen index {idx} → IP = {chosen_ip}")
+
+    return chosen_ip
 
 # Client handler
 def handle_client(conn: socket.socket, addr) -> None:
@@ -80,15 +82,14 @@ def handle_client(conn: socket.socket, addr) -> None:
                 break
             if len(frame) < 8:
                 print("Frame too small")
-                print("Connection closed")
                 break
+
             header = frame[:8].decode("ascii", errors="ignore")
             dns_bytes = frame[8:]
-            qname = None
+            qname = "<unknown>"
             try:
                 dns = DNS(dns_bytes)
                 if dns.qdcount > 0 and dns.qd is not None:
-                    # extract qname
                     q = dns.qd
                     if hasattr(q, "qname"):
                         if isinstance(q.qname, bytes):
@@ -96,27 +97,30 @@ def handle_client(conn: socket.socket, addr) -> None:
                         else:
                             qname = str(q.qname)
             except Exception as e:
-                # proceed with IP selection based on header
-                qname = None
+                pass
+
+            print(f"\n[>] Received packet")
+            print(f"    Custom header = {header}")
+            print(f"    Extracted qname = {qname}")
 
             resolved_ip = pick_ip_from_header(header)
+
             resp_obj = {"id": header, "qname": qname or "", "resolved": resolved_ip}
             resp_bytes = header.encode("ascii") + json.dumps(resp_obj).encode("utf-8")
             send_frame(conn, resp_bytes)
 
-            # server-console log
-            print(f"[{header}] qname={qname or '<no-qname>'} -> {resolved_ip}")
+            print(f"     Assigned IP: {resolved_ip}")
     finally:
         conn.close()
         print(f"[{datetime.now()}] Disconnected {addr}")
 
-# Server runner
+# Server main
 def run_server(bind_host: str = "0.0.0.0", bind_port: int = 53530):
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind((bind_host, bind_port))
         s.listen(8)
-        print(f"[*] Server listening on {bind_host}:{bind_port}")
+        print(f"[*] DNS Server listening on {bind_host}:{bind_port}")
         while True:
             conn, addr = s.accept()
             t = threading.Thread(target=handle_client, args=(conn, addr), daemon=True)
